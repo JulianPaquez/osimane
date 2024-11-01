@@ -1,0 +1,153 @@
+using Application.Interfaces;
+using Application.Services;
+using Domain.Entities;
+using Domain.Enum;
+using Domain.Interfaces;
+using Ecommerce.Web.Middlewares;
+using Infrastructure.Data;
+using Infrastructure.Service;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+using System.Reflection;
+using System.Text;
+using Web.Controllers;
+
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+builder.Services.AddEndpointsApiExplorer();
+
+builder.Services.AddSwaggerGen(setupAction =>
+{
+    setupAction.AddSecurityDefinition("EcommerceApiBearerAuth", new OpenApiSecurityScheme() 
+    {
+        Type = SecuritySchemeType.Http,  
+        Scheme = "Bearer", 
+        Description = "Ac� pegar el token generado al loguearse."  
+    });
+
+    setupAction.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,  
+                    Id = "EcommerceApiBearerAuth" } 
+                }, new List<string>() } 
+    });
+
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml"; 
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile); 
+    setupAction.IncludeXmlComments(xmlPath); 
+
+});
+
+
+ string connectionString = builder.Configuration.GetConnectionString("DBConnectionString");
+
+// Configure DbContext
+builder.Services.AddDbContext<ApplicationDbContext>(dbContextOptions =>
+    dbContextOptions.UseSqlite(connectionString)); 
+
+
+#region Repositories
+//builder.Services.AddScoped<ApplicationDbContext>();
+builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
+builder.Services.AddScoped<IOrderRepository, OrderRepository>();
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IProductRepository,ProductRepository>();
+builder.Services.AddScoped<IOrderProductRepository, OrderProductRepository>();
+builder.Services.AddScoped<IOrderNotificationRepository, OrderNotificationRepository>();
+#endregion
+
+#region Services
+builder.Services.AddScoped<IOrderNotificationService, OrderNotificationService>();
+builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<IProductService, ProductService>();
+builder.Services.AddScoped<ISendEmailService, SendEmailService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddTransient <GlobalExceptionHandlingMiddleware>();
+#endregion
+
+
+builder.Services.Configure<AutenticacionServiceOptions>(
+    builder.Configuration.GetSection(AutenticacionServiceOptions.AutenticacionService));
+
+
+builder.Services.AddAuthentication("Bearer")
+    .AddJwtBearer(options => 
+    options.TokenValidationParameters = new()
+    {
+        ValidateIssuer = true, 
+        ValidateAudience = true, 
+        ValidateIssuerSigningKey = true, 
+        ValidIssuer = builder.Configuration["AutenticacionService:Issuer"], 
+        ValidAudience = builder.Configuration["AutenticacionService:Audience"], 
+        IssuerSigningKey = new SymmetricSecurityKey( 
+            Encoding.ASCII.GetBytes(builder.Configuration["AutenticacionService:SecretForKey"])) 
+    });
+
+ builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("AdminPolicy", policy => policy.RequireRole(UserType.Admin.ToString()));
+    options.AddPolicy("SellerPolicy", policy => policy.RequireRole(UserType.Seller.ToString()));
+    options.AddPolicy("CustomerPolicy", policy => policy.RequireRole(UserType.Customer.ToString()));
+    options.AddPolicy("AdminOrSellerPolicy", policy =>
+        policy.RequireAssertion(context =>
+            context.User.IsInRole(UserType.Admin.ToString()) ||
+            context.User.IsInRole(UserType.Seller.ToString())));
+    options.AddPolicy("CustomerOrSellerPolicy", policy =>
+        policy.RequireAssertion(context =>
+            context.User.IsInRole(UserType.Customer.ToString()) ||
+            context.User.IsInRole(UserType.Seller.ToString())));
+    options.AddPolicy("EveryoneExceptGuests", policy =>
+        policy.RequireAssertion(context =>
+            context.User.IsInRole(UserType.Customer.ToString()) ||
+            context.User.IsInRole(UserType.Seller.ToString()) ||
+            context.User.IsInRole(UserType.Admin.ToString())));
+});
+
+var proveedor = builder.Services.BuildServiceProvider();
+var configuration = proveedor.GetService<IConfiguration>();
+
+builder.Services.AddCors(opciones =>
+{
+    var fronendURL = configuration.GetValue<String>("Local_Frontend_URL");
+
+    opciones.AddDefaultPolicy(builder =>
+    {
+        builder.WithOrigins(fronendURL).AllowAnyMethod().AllowAnyHeader();
+    });
+});
+ 
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+
+app.UseHttpsRedirection();
+
+app.UseAuthentication();
+
+app.UseAuthorization();
+
+app.UseMiddleware<GlobalExceptionHandlingMiddleware>();
+
+app.UseCors();
+
+app.MapControllers();
+
+app.Run();
